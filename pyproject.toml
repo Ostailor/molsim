@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moldis"
+version = "0.1.0"
+description = "Molecule discovery pipeline: spec-driven generation, property prediction with UQ, non-actionable synthesis ideas, and research-grade reports."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "UNLICENSED" }
+authors = [
+  { name = "Molecule Discovery Authors" }
+]
+keywords = ["cheminformatics", "molecular-design", "drug-discovery", "materials", "generative-models"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: Other/Proprietary License",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "black==24.8.0",
+  "ruff==0.6.9",
+  "mypy==1.11.1",
+  "pytest==8.3.2",
+  "pytest-cov==5.0.0",
+  "pre-commit==3.7.1",
+]
+
+[project.scripts]
+moldis = "moldis.cli:main"
+
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  "E",  # pycodestyle errors
+  "F",  # pyflakes
+  "I",  # isort
+  "B",  # flake8-bugbear
+  "UP", # pyupgrade
+]
+ignore = []
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+no_implicit_optional = false
+check_untyped_defs = false
+disallow_untyped_defs = false
+show_error_context = true
+pretty = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q -ra"
+testpaths = ["tests"]
