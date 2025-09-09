@@ -40,6 +40,11 @@ chem = [
   "numpy<2",
   "rdkit-pypi>=2022.9.5"
 ]
+ml = [
+  "scikit-learn>=1.4",
+  "matplotlib>=3.8",
+  "joblib>=1.4"
+]
 
 
 
