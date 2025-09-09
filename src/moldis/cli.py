@@ -6,10 +6,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .geometry.conformers import (
-    batch_conformers_to_artifacts,
-    summarize_conformers,
-)
+from .geometry.conformers import batch_conformers_to_artifacts, summarize_conformers
 from .predict.datasets import load_esol_tiny
 from .predict.features import FEATURE_NAMES, featurize_smiles
 from .predict.sklearn_models import (
@@ -23,16 +20,17 @@ from .predict.sklearn_models import (
     predict_intervals_from_quantiles,
     save_model,
 )
-from .predict.sklearn_models import (
-    fit_ridge as sk_fit_ridge,
-)
+from .predict.sklearn_models import fit_ridge as sk_fit_ridge
 from .predict.splits import scaffold_split
 from .report.calibration import plot_interval_calibration
+from .safety.lint import lint_routes_file
 from .safety.request_gate import screen_user_request
 from .scoring.objectives import Goal, apply_uncertainty_penalty, compute_bounds, normalize
 from .scoring.pareto import hypervolume_2d
 from .scoring.selection import select_pareto, select_weighted_sum
 from .spec.models import Spec, validate_spec_payload
+from .synth.feasibility import assess_feasibility, load_blocks_csv
+from .synth.high_level_routes import propose_routes
 from .utils.io import dump_json, load_yaml_or_json
 from .utils.run import log_event, new_run_id, run_dir, snapshot_config
 
@@ -197,6 +195,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--xtb",
         action="store_true",
         help="Compute xTB single-point properties if xtb is installed",
+    )
+
+    synth_parser = subparsers.add_parser(
+        "synth", help="Compute synthesis feasibility metrics and suggest high-level routes"
+    )
+    synth_parser.add_argument("--smiles", type=str, required=True)
+    synth_parser.add_argument(
+        "--blocks",
+        type=str,
+        required=False,
+        help="Optional CSV with 'smiles' column listing building blocks",
+    )
+    synth_parser.add_argument(
+        "--out", type=str, required=False, default="artifacts/synth", help="Output directory"
+    )
+    synth_parser.add_argument(
+        "--sa",
+        type=str,
+        choices=["auto", "sa", "proxy"],
+        default="auto",
+        help="Choose SA score source: sascorer (sa), proxy, or auto",
     )
 
     return parser
@@ -544,6 +563,26 @@ def _cmd_conformers(
     return 0
 
 
+def _cmd_synth(smiles: str, blocks: str | None, out: str, sa_prefer: str) -> int:
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    block_list = load_blocks_csv(blocks) if blocks else None
+    feas = assess_feasibility(smiles, blocks=block_list, sa_prefer=sa_prefer)
+    import json
+    from dataclasses import asdict as _asdict
+
+    (out_dir / "feasibility.json").write_text(
+        json.dumps(_asdict(feas), ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8"
+    )
+    ideas = propose_routes(smiles)
+    (out_dir / "routes.json").write_text(
+        json.dumps([idea.__dict__ for idea in ideas], ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    sys.stdout.write(f"Wrote synthesis feasibility to {out_dir}\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -592,6 +631,16 @@ def main(argv: list[str] | None = None) -> int:
             ff=args.ff,
             xtb=args.xtb,
         )
+    if args.command == "synth":
+        return _cmd_synth(smiles=args.smiles, blocks=args.blocks, out=args.out, sa_prefer=args.sa)
+    if args.command == "safety-lint":
+        issues = lint_routes_file(args.routes_file)
+        if issues:
+            for issue in issues:
+                sys.stderr.write(f"Route {issue['index']}: banned patterns {issue['hits']}\n")
+            return 1
+        sys.stdout.write("No banned terms found in routes.\n")
+        return 0
     # Default: print help
     parser.print_help()
     return 0
