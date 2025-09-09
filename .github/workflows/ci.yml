@@ -11,7 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11"]
+        extras: ["dev", "dev,ml", "dev,chem"]
     steps:
       - uses: actions/checkout@v4
 
@@ -20,10 +21,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install project
+      - name: Install project with extras ${{ matrix.extras }}
+        env:
+          MPLBACKEND: Agg
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[${{ matrix.extras }}]"
 
       - name: Lint
         run: |
@@ -35,5 +38,7 @@ jobs:
           mypy src
 
       - name: Test
+        env:
+          MPLBACKEND: Agg
         run: |
           pytest -q
