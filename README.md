@@ -2,9 +2,6 @@
 
 Specification‑driven generation of novel molecules with property prediction (including uncertainty), high‑level non‑actionable synthesis ideas, and research‑grade reporting.
 
-- See `AGENTS.md` for the agents architecture, safety, and roadmap.
-- See `TASKS.md` for the full phased task plan.
-
 ## Quickstart (Dev)
 
 ```bash
