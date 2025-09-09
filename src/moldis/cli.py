@@ -6,6 +6,10 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .geometry.conformers import (
+    batch_conformers_to_artifacts,
+    summarize_conformers,
+)
 from .predict.datasets import load_esol_tiny
 from .predict.features import FEATURE_NAMES, featurize_smiles
 from .predict.sklearn_models import (
@@ -62,10 +66,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to spec YAML/JSON",
     )
 
-    report_parser = subparsers.add_parser(
-        "report", help="Rebuild a report from artifacts (P9). Placeholder."
+    report_parser = subparsers.add_parser("report", help="Build a simple report from artifacts")
+    report_parser.add_argument("--run", type=str, required=False, help="Run ID (reserved)")
+    report_parser.add_argument(
+        "--geom-dir",
+        type=str,
+        required=False,
+        help="Directory containing summaries.jsonl for conformers",
     )
-    report_parser.add_argument("--run", type=str, required=False, help="Run ID")
+    report_parser.add_argument(
+        "--out-md",
+        type=str,
+        required=False,
+        help="Output Markdown path",
+        default="artifacts/report.md",
+    )
+    report_parser.add_argument(
+        "--out-json",
+        type=str,
+        required=False,
+        help="Output JSON summary path",
+        default="artifacts/report.json",
+    )
 
     schema_parser = subparsers.add_parser("schema", help="Print the Spec JSON Schema")
     schema_parser.add_argument(
@@ -151,6 +173,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--penalty-k", type=float, default=1.0, help="Uncertainty penalty multiplier"
     )
     score_parser.add_argument("--seed", type=int, default=0, help="Random seed for selection")
+
+    conf_parser = subparsers.add_parser(
+        "conformers", help="Generate 3D conformers and energies; write SDF and summaries"
+    )
+    conf_parser.add_argument("--smiles", type=str, help="Single SMILES input", required=False)
+    conf_parser.add_argument(
+        "--input",
+        type=str,
+        help="Optional CSV with 'smiles' column (and optional 'id')",
+        required=False,
+    )
+    conf_parser.add_argument(
+        "--out",
+        type=str,
+        default="artifacts/geom",
+        help="Output directory (SDF and summaries.jsonl)",
+    )
+    conf_parser.add_argument("--n-confs", type=int, default=20)
+    conf_parser.add_argument("--seed", type=int, default=0)
+    conf_parser.add_argument("--ff", type=str, default="MMFF", choices=["MMFF", "UFF"])
+    conf_parser.add_argument(
+        "--xtb",
+        action="store_true",
+        help="Compute xTB single-point properties if xtb is installed",
+    )
 
     return parser
 
@@ -434,6 +481,69 @@ def _cmd_score(
     return 0
 
 
+def _cmd_conformers(
+    smiles: str | None,
+    input_path: str | None,
+    out: str,
+    n_confs: int,
+    seed: int,
+    ff: str,
+    xtb: bool,
+) -> int:
+    import csv
+    import json
+    from dataclasses import asdict
+    from pathlib import Path as _P
+
+    if not smiles and not input_path:
+        sys.stderr.write("Provide either --smiles or --input CSV with 'smiles' column.\n")
+        return 2
+    out_dir = _P(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if smiles:
+        summ = summarize_conformers(
+            smiles,
+            n_confs=n_confs,
+            seed=seed,
+            forcefield_preference=ff,
+            do_xtb=xtb,
+        )
+        (out_dir / "summary.json").write_text(
+            json.dumps(asdict(summ), ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        # Also write SDF with all conformers
+        from .geometry.conformers import generate_conformers, write_sdf
+
+        mol, energies, _ = generate_conformers(
+            smiles, n_confs=n_confs, seed=seed, forcefield_preference=ff
+        )
+        write_sdf(mol, out_dir / "molecule.sdf", energies)
+        sys.stdout.write(f"Wrote conformers to {out_dir}\n")
+        return 0
+
+    # CSV path
+    if input_path is None:
+        sys.stderr.write("--input required when --smiles is not provided.\n")
+        return 2
+    with open(input_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = [r for r in reader]
+    if not rows or "smiles" not in rows[0]:
+        sys.stderr.write("Input CSV must contain a 'smiles' column.\n")
+        return 2
+    sdf_path = batch_conformers_to_artifacts(
+        [r["smiles"] for r in rows],
+        out_dir=out_dir,
+        n_confs=n_confs,
+        seed=seed,
+        forcefield_preference=ff,
+        do_xtb=xtb,
+    )
+    sys.stdout.write(f"Wrote SDF: {sdf_path}\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -441,6 +551,16 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args.spec)
     if args.command == "schema":
         return _cmd_schema(args.out)
+    if args.command == "report":
+        # Currently only supports geom-dir; run-based reporting to be added in P9
+        from .report.builder import build_geom_report
+
+        if args.geom_dir:
+            build_geom_report(args.geom_dir, args.out_md, args.out_json)
+            sys.stdout.write(f"Wrote report: {args.out_md}\n")
+            return 0
+        sys.stderr.write("Nothing to report; provide --geom-dir.\n")
+        return 2
     if args.command == "train":
         return _cmd_train(
             task=args.task,
@@ -461,6 +581,16 @@ def main(argv: list[str] | None = None) -> int:
             weights=args.weights,
             penalty_k=args.penalty_k,
             seed=args.seed,
+        )
+    if args.command == "conformers":
+        return _cmd_conformers(
+            smiles=args.smiles,
+            input_path=args.input,
+            out=args.out,
+            n_confs=args.n_confs,
+            seed=args.seed,
+            ff=args.ff,
+            xtb=args.xtb,
         )
     # Default: print help
     parser.print_help()
