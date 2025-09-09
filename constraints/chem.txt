@@ -1,0 +1,5 @@
+# P2 cheminformatics optional dependencies with compatible ABI
+# RDKit wheels (rdkit-pypi 2022.09.5) are built against NumPy 1.x.
+# Pin NumPy < 2 to avoid ABI mismatch ("_ARRAY_API not found").
+numpy<2
+rdkit-pypi==2022.9.5

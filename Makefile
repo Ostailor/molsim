@@ -40,3 +40,13 @@ clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .mypy_cache .ruff_cache build dist *.egg-info
 
 .PHONY: help setup lint fix type test format clean
+
+# --- Optional RDKit setup helpers ---
+chem-setup: $(VENV) ## Install RDKit and NumPy 1.x compatible wheels
+	$(PIP) install --no-cache-dir -r constraints/chem.txt
+	@echo "RDKit + NumPy (ABI-compatible) installed."
+
+chem-test: ## Run only RDKit-dependent tests
+	$(VENV)/bin/pytest -q tests/chem
+
+.PHONY: chem-setup chem-test
