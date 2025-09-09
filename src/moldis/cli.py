@@ -25,6 +25,9 @@ from .predict.sklearn_models import (
 from .predict.splits import scaffold_split
 from .report.calibration import plot_interval_calibration
 from .safety.request_gate import screen_user_request
+from .scoring.objectives import Goal, apply_uncertainty_penalty, compute_bounds, normalize
+from .scoring.pareto import hypervolume_2d
+from .scoring.selection import select_pareto, select_weighted_sum
 from .spec.models import Spec, validate_spec_payload
 from .utils.io import dump_json, load_yaml_or_json
 from .utils.run import log_event, new_run_id, run_dir, snapshot_config
@@ -104,6 +107,50 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument(
         "--n-estimators", type=int, default=200, help="Number of trees (for rf)"
     )
+
+    score_parser = subparsers.add_parser(
+        "score", help="Score and select candidates from a CSV via Pareto or weighted methods"
+    )
+    score_parser.add_argument("--input", type=str, required=True, help="Path to candidates CSV")
+    score_parser.add_argument(
+        "--out",
+        type=str,
+        default="artifacts/score",
+        help="Output directory for selection artifacts",
+    )
+    score_parser.add_argument(
+        "--objectives",
+        type=str,
+        required=True,
+        help="Comma list like 'p1:max,p2:min' mapping columns to goals",
+    )
+    score_parser.add_argument(
+        "--sigmas",
+        type=str,
+        default="",
+        help=(
+            "Optional comma list of sigma columns aligned to objectives; "
+            "defaults to <name>_sigma if present"
+        ),
+    )
+    score_parser.add_argument("--k", type=int, default=20, help="Number of selections to keep")
+    score_parser.add_argument(
+        "--method",
+        type=str,
+        default="pareto",
+        choices=["pareto", "weighted"],
+        help="Selection method",
+    )
+    score_parser.add_argument(
+        "--weights",
+        type=str,
+        default="",
+        help="Comma list of weights for weighted method (length must match objectives)",
+    )
+    score_parser.add_argument(
+        "--penalty-k", type=float, default=1.0, help="Uncertainty penalty multiplier"
+    )
+    score_parser.add_argument("--seed", type=int, default=0, help="Random seed for selection")
 
     return parser
 
@@ -236,6 +283,157 @@ def _cmd_train(
     return 0
 
 
+def _parse_objectives(spec: str) -> tuple[list[str], list[Goal]]:
+    parts = [p.strip() for p in spec.split(",") if p.strip()]
+    names: list[str] = []
+    goals: list[Goal] = []
+    for p in parts:
+        if ":" not in p:
+            raise ValueError("Objective must be 'name:goal'")
+        n, g = p.split(":", 1)
+        n = n.strip()
+        g = g.strip().lower()
+        if g not in {"max", "min"}:
+            raise ValueError("Goal must be 'max' or 'min'")
+        names.append(n)
+        goals.append(g)  # type: ignore[arg-type]
+    return names, goals
+
+
+def _read_csv(path: str) -> tuple[list[str], list[dict[str, str]]]:
+    import csv
+
+    with open(path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        header = list(reader.fieldnames or [])
+        rows = [row for row in reader]
+    return header, rows
+
+
+def _cmd_score(
+    input_path: str,
+    out: str,
+    objectives: str,
+    sigmas: str,
+    k: int,
+    method: str,
+    weights: str,
+    penalty_k: float,
+    seed: int,
+) -> int:
+    import json
+
+    import numpy as np
+
+    obj_names, goals = _parse_objectives(objectives)
+    header, rows = _read_csv(input_path)
+    id_key = "id" if "id" in header else ("smiles" if "smiles" in header else None)
+    ids: list[str] = []
+    means_list: list[list[float]] = []
+    sig_list: list[list[float]] | None = None
+
+    # Sigma columns mapping
+    sigma_cols: list[str] | None = None
+    if sigmas.strip():
+        sigma_cols = [s.strip() for s in sigmas.split(",") if s.strip()]
+        if len(sigma_cols) != len(obj_names):
+            raise ValueError("Length of --sigmas must match number of objectives")
+
+    for idx, row in enumerate(rows):
+        rid = row[id_key] if id_key else f"row{idx}"
+        ids.append(rid)
+        vals: list[float] = []
+        svals: list[float] = []
+        for j, name in enumerate(obj_names):
+            try:
+                vals.append(float(row[name]))
+            except Exception:
+                vals.append(float("nan"))
+            if sigma_cols is not None:
+                sc = sigma_cols[j]
+                svals.append(float(row.get(sc, "nan")))
+            else:
+                sc_auto = f"{name}_sigma"
+                if sc_auto in row:
+                    svals.append(float(row.get(sc_auto, "nan")))
+        means_list.append(vals)
+        if svals:
+            if sig_list is None:
+                sig_list = []
+            sig_list.append(svals)
+
+    means = np.asarray(means_list, dtype=float)
+    sigmas_arr = None
+    if (
+        isinstance(sig_list, list)
+        and sig_list
+        and len(sig_list) == len(means_list)
+        and len(sig_list[0]) == len(obj_names)
+    ):
+        sigmas_arr = np.asarray(sig_list, dtype=float)
+
+    # Apply uncertainty penalty and normalize
+    penalized = apply_uncertainty_penalty(means, sigmas_arr, goals, k=penalty_k)
+    lo, hi = compute_bounds(penalized)
+    norm = normalize(penalized, goals, lo, hi)
+
+    # Selection
+    if method == "pareto":
+        selected_ids = select_pareto(
+            ids, means, sigmas_arr, goals, k=k, penalty_k=penalty_k, seed=seed
+        )
+    else:
+        if weights.strip():
+            ws = [float(x) for x in weights.split(",")]
+            if len(ws) != len(obj_names):
+                raise ValueError("Length of --weights must match number of objectives")
+        else:
+            ws = [1.0 / len(obj_names)] * len(obj_names)
+        ordered = select_weighted_sum(
+            ids, means, sigmas_arr, goals, weights=ws, penalty_k=penalty_k
+        )
+        selected_ids = ordered[:k]
+
+    # Hypervolume (2D only) on normalized values (maximize), transform to min for HV
+    hv = None
+    if norm.shape[1] == 2:
+        pts_min = 1.0 - norm  # all in [0,1]
+        hv = float(hypervolume_2d(pts_min, ref=(1.0, 1.0)))
+
+    # Write artifacts
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # selected.csv
+    import csv
+
+    with (out_dir / "selected.csv").open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["id", *obj_names])
+        id_set = set(selected_ids)
+        for i, rid in enumerate(ids):
+            if rid in id_set:
+                row_vals = [rid] + [means[i, j] for j in range(len(obj_names))]
+                writer.writerow(row_vals)
+    # score.json
+    summary = {
+        "objectives": [{"name": n, "goal": g} for n, g in zip(obj_names, goals, strict=False)],
+        "method": method,
+        "k": k,
+        "penalty_k": penalty_k,
+        "seed": seed,
+        "hypervolume_2d": hv,
+        "bounds_lo": lo.tolist(),
+        "bounds_hi": hi.tolist(),
+        "selected_ids": selected_ids,
+        "input": input_path,
+    }
+    (out_dir / "score.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    sys.stdout.write(f"Saved selection to {out_dir}\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -251,6 +449,18 @@ def main(argv: list[str] | None = None) -> int:
             val_fraction=args.val_fraction,
             random_state=args.random_state,
             n_estimators=args.n_estimators,
+        )
+    if args.command == "score":
+        return _cmd_score(
+            input_path=args.input,
+            out=args.out,
+            objectives=args.objectives,
+            sigmas=args.sigmas,
+            k=args.k,
+            method=args.method,
+            weights=args.weights,
+            penalty_k=args.penalty_k,
+            seed=args.seed,
         )
     # Default: print help
     parser.print_help()
