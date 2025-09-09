@@ -1,0 +1,11 @@
+request_id: BLOCK-0001
+use_case: custom
+objectives:
+  - name: example_property
+    target: 1.0
+    weight: 1.0
+constraints: {}
+compute: {}
+ethics:
+  safety_mode: strict
+notes: "This request mentions an explosive and weapon just for gate testing."

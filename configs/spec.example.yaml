@@ -1,0 +1,26 @@
+request_id: EXAMPLE-0001
+use_case: pharma
+objectives:
+  - name: logP
+    target: 2.0
+    tolerance: 0.5
+    weight: 0.5
+  - name: TPSA
+    target: 75
+    tolerance: 15
+    weight: 0.5
+constraints:
+  allowed_elements: [C, H, N, O, F, S, Cl]
+  max_heavy_atoms: 40
+  max_rings: 4
+  novelty_threshold: medium
+  synthesizability_min: 0.6
+  toxicology_profile: low_risk_only
+compute:
+  budget: standard
+  max_candidates: 1000
+  physics_tier: none
+ethics:
+  safety_mode: strict
+  prohibited_motifs: []
+notes: "Benign example for testing."
