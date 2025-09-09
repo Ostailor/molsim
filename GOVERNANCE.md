@@ -9,7 +9,7 @@ This project follows a lightweight governance model to balance velocity with qua
 
 ## Decision Making
 
-- Technical decisions follow “rough consensus” among maintainers, guided by AGENTS.md and TASKS.md.
+- Technical decisions follow “rough consensus” among maintainers.
 - Safety concerns override feature velocity.
 
 ## Releases

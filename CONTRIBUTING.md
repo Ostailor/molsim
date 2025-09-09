@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in contributing! This project aims to deliver a research‑grade, safety‑aware molecule discovery pipeline. Please read AGENTS.md and TASKS.md before contributing.
+Thanks for your interest in contributing! This project aims to deliver a research‑grade, safety‑aware molecule discovery pipeline.
 
 ## Development Setup
 
@@ -20,12 +20,12 @@ Thanks for your interest in contributing! This project aims to deliver a researc
 ## Tests
 
 - Add unit tests for new logic; keep them fast and deterministic.
-- Mark slow/integration tests distinctly (not required in P0–P2).
+- Mark slow/integration tests distinctly.
 
 ## Safety & Ethics
 
 - Never add actionable synthesis instructions or enable harmful outputs.
-- Follow the Safety & Compliance policies in AGENTS.md.
+- Follow the Safety & Compliance policies.
 
 ## Commit and PR Process
 

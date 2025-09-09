@@ -11,4 +11,4 @@ When reporting, include:
 
 We will acknowledge receipt within 5 business days and coordinate a fix and disclosure timeline.
 
-Safety Note: This project prohibits generation of harmful, illegal, or controlled substances and any actionable synthesis instructions. See AGENTS.md for safety requirements.
+Safety Note: This project prohibits generation of harmful, illegal, or controlled substances and any actionable synthesis instructions.
