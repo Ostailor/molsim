@@ -7,7 +7,8 @@ from pathlib import Path
 
 from . import __version__
 from .geometry.conformers import batch_conformers_to_artifacts, summarize_conformers
-from .predict.datasets import load_esol_tiny
+from .orchestrator.pipeline import run_pipeline as _run_pipeline_core
+from .predict.datasets import load_esol_tiny, load_from_csv
 from .predict.features import FEATURE_NAMES, featurize_smiles
 from .predict.sklearn_models import (
     SKLearnRegressor,
@@ -32,7 +33,6 @@ from .spec.models import Spec, validate_spec_payload
 from .synth.feasibility import assess_feasibility, load_blocks_csv
 from .synth.high_level_routes import propose_routes
 from .utils.io import dump_json, load_yaml_or_json
-from .utils.run import log_event, new_run_id, run_dir, snapshot_config
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         required=True,
         help="Path to spec YAML/JSON",
+    )
+    run_parser.add_argument(
+        "--resume",
+        type=str,
+        required=False,
+        help="Existing run_id to resume and skip completed stages",
     )
 
     report_parser = subparsers.add_parser("report", help="Build a simple report from artifacts")
@@ -110,6 +116,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="artifacts/models/esol_rf",
         help="Output directory for model artifacts",
+    )
+    train_parser.add_argument(
+        "--csv",
+        type=str,
+        default="",
+        help="Optional CSV path to override default task dataset",
+    )
+    train_parser.add_argument(
+        "--smiles-col",
+        type=str,
+        default="smiles",
+        help="SMILES column name for --csv",
+    )
+    train_parser.add_argument(
+        "--y-col",
+        type=str,
+        default="y",
+        help="Target column name for --csv",
     )
     train_parser.add_argument(
         "--model",
@@ -172,6 +196,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     score_parser.add_argument("--seed", type=int, default=0, help="Random seed for selection")
 
+    # Alias: eval -> score (for P8 ergonomics)
+    eval_parser = subparsers.add_parser(
+        "eval",
+        help="Alias for 'score' (evaluate and select candidates)",
+        description="Alias for 'score' (evaluate and select candidates)",
+    )
+    # Mirror score args
+    eval_parser.add_argument("--input", type=str, required=True, help="Path to candidates CSV")
+    eval_parser.add_argument(
+        "--out",
+        type=str,
+        default="artifacts/score",
+        help="Output directory for selection artifacts",
+    )
+    eval_parser.add_argument(
+        "--objectives",
+        type=str,
+        required=True,
+        help="Comma list like 'p1:max,p2:min' mapping columns to goals",
+    )
+    eval_parser.add_argument(
+        "--sigmas",
+        type=str,
+        default="",
+        help=(
+            "Optional comma list of sigma columns aligned to objectives; "
+            "defaults to <name>_sigma if present"
+        ),
+    )
+    eval_parser.add_argument("--k", type=int, default=20, help="Number of selections to keep")
+    eval_parser.add_argument(
+        "--method",
+        type=str,
+        default="pareto",
+        choices=["pareto", "weighted"],
+        help="Selection method",
+    )
+    eval_parser.add_argument(
+        "--weights",
+        type=str,
+        default="",
+        help="Comma list of weights for weighted method (length must match objectives)",
+    )
+    eval_parser.add_argument(
+        "--penalty-k", type=float, default=1.0, help="Uncertainty penalty multiplier"
+    )
+    eval_parser.add_argument("--seed", type=int, default=0, help="Random seed for selection")
+
     conf_parser = subparsers.add_parser(
         "conformers", help="Generate 3D conformers and energies; write SDF and summaries"
     )
@@ -218,10 +290,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Choose SA score source: sascorer (sa), proxy, or auto",
     )
 
+    safety_parser = subparsers.add_parser(
+        "safety-lint",
+        help="Check routes JSON for potentially actionable content (banned patterns)",
+    )
+    safety_parser.add_argument(
+        "--routes-file",
+        type=str,
+        required=True,
+        help="Path to routes.json (list of route ideas)",
+    )
+
     return parser
 
 
-def _cmd_run(spec_path: str) -> int:
+def _cmd_run(spec_path: str, resume: str | None) -> int:
     payload = load_yaml_or_json(spec_path)
     spec: Spec = validate_spec_payload(payload)
     allowed, reasons = screen_user_request(spec)
@@ -230,15 +313,8 @@ def _cmd_run(spec_path: str) -> int:
         for r in reasons:
             sys.stderr.write(f"- {r}\n")
         return 2
-
-    run_id = new_run_id()
-    run_dir(run_id)  # ensure dirs
-    snapshot_config(run_id, payload)
-    log_event(run_id, "run_start", request_id=spec.request_id, use_case=spec.use_case)
-    log_event(run_id, "safety_check", status="pass")
-    log_event(run_id, "spec_validated", objectives=len(spec.objectives))
-    # Later phases will do actual work; for now, print run_id for the user.
-    sys.stdout.write(json.dumps({"run_id": run_id}) + "\n")
+    run_id = _run_pipeline_core(spec, resume=resume)
+    sys.stdout.write(json.dumps({"run_id": run_id, "artifacts": f"artifacts/{run_id}"}) + "\n")
     return 0
 
 
@@ -260,13 +336,19 @@ def _cmd_train(
     val_fraction: float,
     random_state: int,
     n_estimators: int,
+    csv_path: str,
+    smiles_col: str,
+    y_col: str,
 ) -> int:
     # Currently supports only ESOL
-    if task != "esol":
-        sys.stderr.write("Only 'esol' task is supported right now.\n")
-        return 2
-    # Load data and features
-    smiles, y_list = load_esol_tiny()
+    if csv_path.strip():
+        smiles, y_list = load_from_csv(csv_path, smiles_col=smiles_col, y_col=y_col)
+    else:
+        if task != "esol":
+            sys.stderr.write("Only 'esol' task is built-in. Provide --csv for custom datasets.\n")
+            return 2
+        # Load built-in toy data
+        smiles, y_list = load_esol_tiny()
     import numpy as np
 
     X = featurize_smiles(smiles).X
@@ -587,7 +669,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "run":
-        return _cmd_run(args.spec)
+        return _cmd_run(args.spec, args.resume)
     if args.command == "schema":
         return _cmd_schema(args.out)
     if args.command == "report":
@@ -608,8 +690,23 @@ def main(argv: list[str] | None = None) -> int:
             val_fraction=args.val_fraction,
             random_state=args.random_state,
             n_estimators=args.n_estimators,
+            csv_path=args.csv,
+            smiles_col=args.smiles_col,
+            y_col=args.y_col,
         )
     if args.command == "score":
+        return _cmd_score(
+            input_path=args.input,
+            out=args.out,
+            objectives=args.objectives,
+            sigmas=args.sigmas,
+            k=args.k,
+            method=args.method,
+            weights=args.weights,
+            penalty_k=args.penalty_k,
+            seed=args.seed,
+        )
+    if args.command == "eval":
         return _cmd_score(
             input_path=args.input,
             out=args.out,

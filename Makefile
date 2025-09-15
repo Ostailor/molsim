@@ -50,3 +50,13 @@ chem-test: ## Run only RDKit-dependent tests
 	$(VENV)/bin/pytest -q tests/chem
 
 .PHONY: chem-setup chem-test
+
+# --- Pipeline convenience targets ---
+run: $(VENV) ## Run end-to-end pipeline on a spec (SPEC=path)
+	$(PYBIN) -m pip install -e ".[chem]" >/dev/null || true
+	$(PYBIN) -m moldis run --spec $(SPEC)
+
+report: $(VENV) ## Build a simple report from a geometry dir (GEOM=dir)
+	$(PYBIN) -m moldis report --geom-dir $(GEOM) --out-md artifacts/report.md --out-json artifacts/report.json
+
+.PHONY: run report

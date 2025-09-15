@@ -66,3 +66,36 @@ def load_esol_tiny() -> tuple[list[str], list[float]]:
         if p.exists():
             return _read_csv_rows(p)
     return _read_csv_rows_from_string(_ESOL_TINY_CSV)
+
+
+def load_from_csv(
+    path: str | Path,
+    smiles_col: str = "smiles",
+    y_col: str = "y",
+) -> tuple[list[str], list[float]]:
+    """Load a generic dataset from CSV with columns for SMILES and target.
+
+    - path: CSV file path
+    - smiles_col: column name containing SMILES strings
+    - y_col: column name containing the target numeric value
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Dataset not found: {p}")
+    smiles: list[str] = []
+    y: list[float] = []
+    with p.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if smiles_col not in (reader.fieldnames or []) or y_col not in (reader.fieldnames or []):
+            raise ValueError(
+                f"CSV must contain columns '{smiles_col}' and '{y_col}'; found {reader.fieldnames}"
+            )
+        for row in reader:
+            try:
+                s = row[smiles_col]
+                t = float(row[y_col])
+            except Exception as e:
+                raise ValueError(f"Error parsing row: {row}") from e
+            smiles.append(s)
+            y.append(t)
+    return smiles, y
